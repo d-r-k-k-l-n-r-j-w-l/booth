@@ -6,11 +6,13 @@ import {
 } from "drawably/react";
 import { drawablyButton, drawablyCard, drawablyInput } from "drawably";
 import { renderBooth } from "./lib/renderBooth";
+import { frameOptions } from "./lib/frameAssets";
+import { stickerOptions } from "./lib/stickerAssets";
 import bg from "./assets/bg.png";
 import cat from "./assets/cat.png";
 import cat2 from "./assets/cat2.png";
 import { useBooth } from "./store";
-import type { FilterId, FrameId, LayoutId } from "./types";
+import type { FilterId, LayoutId, Sticker } from "./types";
 import "./App.css";
 
 const filters: { id: FilterId; label: string; css: string }[] = [
@@ -39,13 +41,6 @@ const filters: { id: FilterId; label: string; css: string }[] = [
     css: "sepia(.65) saturate(.65) contrast(1.25) brightness(.9)",
   },
 ];
-const frames: { id: FrameId; label: string; swatch: string }[] = [
-  { id: "none", label: "None", swatch: "#fffdf8" }, { id: "classic", label: "Classic", swatch: "#fff9ee" },
-  { id: "film", label: "Film", swatch: "#292724" }, { id: "polaroid", label: "Polaroid", swatch: "#e5e0d6" },
-  { id: "doodle", label: "Doodle", swatch: "#fff9ee" }, { id: "kawaii", label: "Kawaii", swatch: "#ffd6df" },
-  { id: "minimal", label: "Minimal", swatch: "#faf8f0" }, { id: "vintage", label: "Vintage", swatch: "#d4c4a8" },
-];
-const frameColors = ["#fff9ee", "#f7c2c3", "#cbdcf1", "#d6e6c9", "#d9cef2", "#4a4a4a"];
 const prompts = [
   "smile!!",
   "okay now be weird.",
@@ -53,17 +48,6 @@ const prompts = [
   "look here!",
   "✌️?",
   "last one ♡",
-];
-const stickerOptions = [
-  "♡",
-  "✿",
-  "★",
-  "☺",
-  "xoxo",
-  "REC",
-  "cherry",
-  "cute!!",
-  "→",
 ];
 const maxBoil = 1;
 function FilterOptions({
@@ -96,6 +80,23 @@ function BoothPreview({ preview, photos, layout, alt }: { preview: string; photo
   if (preview) return <img className="strip-preview" src={preview} alt={alt} />;
   return <div className={`strip-preview strip-fallback strip-fallback-${layout}`} aria-label={alt}>{photos.map((photo, index) => <img src={photo} alt="" key={photo || index} />)}</div>;
 }
+const clamp = (value: number) => Math.max(0, Math.min(100, value));
+function EditorStickerLayer({ preview, photos, layout, stickers, onMove }: { preview: string; photos: string[]; layout: LayoutId; stickers: Sticker[]; onMove: (id: string, x: number, y: number) => void }) {
+  const stage = useRef<HTMLDivElement>(null);
+  const [dragging, setDragging] = useState<{ id: string; startX: number; startY: number; originX: number; originY: number; x: number; y: number } | null>(null);
+  const positionFor = (event: { clientX: number; clientY: number }, drag: NonNullable<typeof dragging>) => {
+    const rect = stage.current?.getBoundingClientRect();
+    if (!rect) return { x: drag.x, y: drag.y };
+    return { x: clamp(drag.originX + (event.clientX - drag.startX) * 100 / rect.width), y: clamp(drag.originY + (event.clientY - drag.startY) * 100 / rect.height) };
+  };
+  return <div className={`editor-preview-stage editor-layout-${layout}`} ref={stage}>
+    <BoothPreview preview={preview} photos={photos} layout={layout} alt="Your edited photobooth composition" />
+    {stickers.map((item) => {
+      const dragged = dragging?.id === item.id ? dragging : item;
+      return <button type="button" className="editor-sticker-on-board" aria-label="Drag sticker" key={item.id} style={{ left: `${dragged.x}%`, top: `${dragged.y}%`, width: `${item.size}%` }} onPointerDown={(event) => { event.currentTarget.setPointerCapture(event.pointerId); setDragging({ id: item.id, startX: event.clientX, startY: event.clientY, originX: item.x, originY: item.y, x: item.x, y: item.y }); }} onPointerMove={(event) => { if (dragging?.id === item.id) setDragging((drag) => drag ? { ...drag, ...positionFor(event, drag) } : drag); }} onPointerUp={(event) => { if (dragging?.id === item.id) { const next = positionFor(event, dragging); onMove(item.id, next.x, next.y); setDragging(null); } }} onPointerCancel={() => setDragging(null)}><img src={item.asset} alt="" draggable={false} /></button>;
+    })}
+  </div>;
+}
 function App() {
   const booth = useBooth();
   const video = useRef<HTMLVideoElement>(null);
@@ -105,7 +106,10 @@ function App() {
   const [countdown, setCountdown] = useState<number | null>(null);
   const [flash, setFlash] = useState(false);
   const [preview, setPreview] = useState("");
-  const [activeTool, setActiveTool] = useState<"frame" | "filter" | "sticker">("frame");
+  const [editorPreview, setEditorPreview] = useState("");
+  const [activeTool, setActiveTool] = useState<"frame" | "filter" | "sticker" | "photo">("frame");
+  const [selectedPhoto, setSelectedPhoto] = useState(0);
+  const [stickerTip, setStickerTip] = useState(false);
   const [giftOpen, setGiftOpen] = useState(false);
   const renderState = useMemo(
     () => ({
@@ -118,6 +122,7 @@ function App() {
       frameColor: booth.frameColor,
       borderWidth: booth.borderWidth,
       photos: booth.photos,
+      photoPositions: booth.photoPositions,
       stickers: booth.stickers,
     }),
     [
@@ -130,29 +135,35 @@ function App() {
       booth.frameColor,
       booth.borderWidth,
       booth.photos,
+      booth.photoPositions,
       booth.stickers,
     ],
   );
-
   useEffect(
     () => () => stream?.getTracks().forEach((track) => track.stop()),
     [stream],
-  );
-  useEffect(() => {
+  );  useEffect(() => {
     if (video.current && stream) {
       video.current.srcObject = stream;
       void video.current.play().catch(() => undefined);
     }
-  }, [stream, booth.stage]);
-  useEffect(() => {
+  }, [stream, booth.stage]);  useEffect(() => {
     if (!renderState.photos.length) return;
     let alive = true;
     renderBooth(renderState, 1).then((url) => alive && setPreview(url)).catch(() => alive && setPreview(""));
     return () => {
       alive = false;
     };
+  }, [renderState]);  useEffect(() => {
+    if (!renderState.photos.length) return;
+    let alive = true;
+    renderBooth({ ...renderState, stickers: [] }, 1).then((url) => alive && setEditorPreview(url)).catch(() => alive && setEditorPreview(""));
+    return () => { alive = false; };
   }, [renderState]);
-  useEffect(() => {
+  const adjustPhoto = (amount: number) => {
+    const index = Math.min(selectedPhoto, Math.max(0, booth.photos.length - 1));
+    booth.patch({ photoPositions: booth.photos.map((_, photoIndex) => photoIndex === index ? { ...(booth.photoPositions[photoIndex] ?? { x: 50, y: 50 }), y: clamp((booth.photoPositions[photoIndex] ?? { x: 50, y: 50 }).y + amount) } : (booth.photoPositions[photoIndex] ?? { x: 50, y: 50 })) });
+  };  useEffect(() => {
     const options = { boil: maxBoil };
     const sketches = [
       ...document.querySelectorAll<HTMLElement>(
@@ -343,7 +354,7 @@ function App() {
             boil={maxBoil}
             variant="solid"
             className="primary reference-enter"
-            onClick={() => booth.setStage("permission")}
+            onClick={() => booth.resetForNewSession("permission")}
           >
             enter booth <span>→</span>
           </DrawablyButton>
@@ -511,13 +522,15 @@ function App() {
         <p className="capture-note capture-note-right" aria-hidden="true">same<br />silly you<br />always ♡</p>
         <span className="capture-arrow capture-arrow-right" aria-hidden="true">⌇</span>
         <section className="capture-core">
-          <DrawablyCard boil={maxBoil} className="capture-frame">
-            <video ref={video} autoPlay playsInline muted onLoadedMetadata={(event) => void event.currentTarget.play().catch(() => undefined)} className="camera" style={{ filter: filters.find((item) => item.id === booth.filter)?.css }} />
-            {flash && <div className="flash" />}
-            <div className="capture-overlay">
-              <p>photo {Math.min(booth.photos.length + 1, booth.photoCount)} of {booth.photoCount}</p>
-              <strong>{countdown ?? "✦"}</strong>
-              <span>{prompts[booth.photos.length % prompts.length]} ♡</span>
+          <DrawablyCard boil={maxBoil} className={`capture-frame capture-layout-${booth.layout}`}>
+            <div className="capture-view">
+              <video ref={video} autoPlay playsInline muted onLoadedMetadata={(event) => void event.currentTarget.play().catch(() => undefined)} className="camera" style={{ filter: filters.find((item) => item.id === booth.filter)?.css }} />
+              {flash && <div className="flash" />}
+              <div className="capture-overlay">
+                <p>photo {Math.min(booth.photos.length + 1, booth.photoCount)} of {booth.photoCount}</p>
+                <strong>{countdown ?? "✦"}</strong>
+                <span>{prompts[booth.photos.length % prompts.length]} ♡</span>
+              </div>
             </div>
           </DrawablyCard>
           <img className="capture-cat" src={cat2} alt="" aria-hidden="true" />
@@ -548,7 +561,7 @@ function App() {
           <DrawablyButton
             boil={maxBoil}
             className="flow-back"
-            onClick={() => booth.setStage("setup")}
+            onClick={() => booth.resetForNewSession("setup")}
           >
             ← back
           </DrawablyButton>
@@ -562,7 +575,7 @@ function App() {
           </DrawablyButton>
           <DrawablyButton
             boil={maxBoil}
-            onClick={() => booth.setStage("setup")}
+            onClick={() => booth.resetForNewSession("setup")}
           >
             retake
           </DrawablyButton>
@@ -581,28 +594,26 @@ function App() {
       <section className="editor-workspace">
         <DrawablyCard boil={maxBoil} className={`editor-board editor-layout-${booth.layout}`}>
           <i className="editor-tape" aria-hidden="true"></i>
-          <BoothPreview preview={preview} photos={booth.photos} layout={booth.layout} alt="Your edited photobooth composition" />
+          <EditorStickerLayer preview={editorPreview} photos={booth.photos} layout={booth.layout} stickers={booth.stickers} onMove={(id, x, y) => booth.patch({ stickers: booth.stickers.map((item) => item.id === id ? { ...item, x, y } : item) })} />
+          {stickerTip && <p className="editor-sticker-tip" role="status">drag it wherever you want ♡</p>}
           <img className="editor-cat" src={cat2} alt="" aria-hidden="true" />
           <span className="editor-board-heart" aria-hidden="true">♡</span>
           <span className="editor-board-sparkles" aria-hidden="true">✧<br />✧</span>
         </DrawablyCard>
         <DrawablyCard boil={maxBoil} className="editor-tools">
           <nav>
-            {([['frame', '▢', 'Frame'], ['filter', '☷', 'Filter'], ['sticker', '☺', 'Sticker']] as const).map(([tool, icon, label]) => (
+            {([['frame', '▢', 'Frame'], ['filter', '☷', 'Filter'], ['sticker', '☺', 'Sticker'], ['photo', '↔', 'Photos']] as const).map(([tool, icon, label]) => (
               <DrawablyButton boil={maxBoil} className={activeTool === tool ? "selected" : ""} onClick={() => setActiveTool(tool)} key={tool}><i>{icon}</i>{label}</DrawablyButton>
             ))}
           </nav>
           <DrawablyDivider boil={maxBoil} />
           {activeTool === "frame" && <section className="editor-panel">
             <h2>Frames</h2>
-            <div className="editor-frame-grid">{frames.map((item) => <DrawablyButton boil={maxBoil} key={item.id} className={booth.frame === item.id ? "selected" : ""} onClick={() => booth.patch({ frame: item.id })}><i className={`frame-swatch frame-${item.id}`} style={{ background: item.swatch }}></i><span>{item.label}</span></DrawablyButton>)}</div>
-            <h3>Color</h3>
-            <div className="editor-colors">{frameColors.map((color) => <DrawablyButton boil={maxBoil} key={color} className={booth.frameColor === color ? "selected" : ""} onClick={() => booth.patch({ frameColor: color })} aria-label={`Use ${color} frame color`}><i style={{ background: color }}></i></DrawablyButton>)}</div>
-            <h3>Border</h3>
-            <div className="editor-border"><input type="range" min="0" max="12" value={booth.borderWidth} onChange={(event) => booth.patch({ borderWidth: Number(event.target.value) })} /><output>{booth.borderWidth}px</output></div>
+            <div className="editor-frame-grid">{frameOptions.map((item) => <DrawablyButton boil={maxBoil} key={item.id} className={booth.frame === item.id ? "selected" : ""} onClick={() => booth.patch({ frame: item.id })}>{item.preview ? <img className="frame-swatch" src={item.preview} alt="" /> : <i className="frame-swatch frame-none" />}<span>{item.label}</span></DrawablyButton>)}</div>
           </section>}
           {activeTool === "filter" && <section className="editor-panel"><h2>Filters</h2><FilterOptions selected={booth.filter} onPick={(filter) => booth.patch({ filter })} /></section>}
-          {activeTool === "sticker" && <section className="editor-panel"><h2>Stickers</h2><div className="editor-stickers">{stickerOptions.map((item) => <DrawablyButton boil={maxBoil} key={item} onClick={() => booth.addSticker({ id: crypto.randomUUID(), asset: item, x: 50, y: 50, size: 10, rotation: 0 })}>{item}</DrawablyButton>)}</div></section>}
+          {activeTool === "sticker" && <section className="editor-panel"><h2>Stickers</h2><p className="editor-help">Tap one, then drag it anywhere on your photo.</p><div className="editor-stickers">{stickerOptions.map((item) => <DrawablyButton boil={maxBoil} key={item} aria-label="Add sticker" onClick={() => { booth.addSticker({ id: crypto.randomUUID(), asset: item, x: 50, y: 50, size: 18, rotation: 0 }); setStickerTip(true); }}><img src={item} alt="" /></DrawablyButton>)}</div></section>}
+          {activeTool === "photo" && <section className="editor-panel"><h2>Move photos</h2><p className="editor-help">Choose a photo, then move the photo itself in the layout.</p><div className="editor-photo-picker">{booth.photos.map((photo, index) => <DrawablyButton boil={maxBoil} className={Math.min(selectedPhoto, booth.photos.length - 1) === index ? "selected" : ""} onClick={() => setSelectedPhoto(index)} key={photo}><img src={photo} alt={`Photo ${index + 1}`} />{index + 1}</DrawablyButton>)}</div><div className="editor-nudge"><DrawablyButton boil={maxBoil} aria-label="Move up" onClick={() => adjustPhoto(-5)}>↑</DrawablyButton><DrawablyButton boil={maxBoil} aria-label="Move down" onClick={() => adjustPhoto(5)}>↓</DrawablyButton></div></section>}
         </DrawablyCard>
       </section>
       <footer className="editor-reference-footer">

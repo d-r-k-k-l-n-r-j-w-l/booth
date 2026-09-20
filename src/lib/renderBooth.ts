@@ -1,3 +1,4 @@
+import { frameAssetFor } from "./frameAssets";
 import type { BoothState, FilterId, LayoutId } from "../types";
 
 const filterMap: Record<FilterId, string> = {
@@ -17,32 +18,21 @@ const crop = (ctx: CanvasRenderingContext2D, image: HTMLImageElement, x: number,
   ctx.drawImage(image, sx, sy, sw, sh, x, y, w, h);
 };
 const isStrip = (layout: LayoutId) => layout === "strip-4" || layout === "strip-3";
-const cellsFor = (layout: LayoutId, width: number, height: number, padding: number, footer: number): Cell[] => {
-  const innerWidth = width - padding * 2;
-  const innerHeight = height - footer - padding * 2;
-  if (isStrip(layout)) {
-    const count = layout === "strip-3" ? 3 : 4;
-    return Array.from({ length: count }, (_, index) => [padding, padding + index * (innerHeight / count), innerWidth, innerHeight / count] as Cell);
-  }
-  if (layout === "grid-4" || layout === "grid-6") {
-    const rows = layout === "grid-6" ? 3 : 2;
-    const cellWidth = (width - padding * 3) / 2;
-    const cellHeight = (height - padding * (rows + 1)) / rows;
-    return Array.from({ length: rows * 2 }, (_, index) => [padding + (index % 2) * (cellWidth + padding), padding + Math.floor(index / 2) * (cellHeight + padding), cellWidth, cellHeight] as Cell);
-  }
-  if (layout === "collage") {
-    const largeWidth = innerWidth * .58;
-    const smallWidth = innerWidth - largeWidth - padding;
-    const smallHeight = (innerHeight - padding * 2) / 3;
-    return [[padding, padding, largeWidth, innerHeight], ...Array.from({ length: 3 }, (_, index) => [padding + largeWidth + padding, padding + index * (smallHeight + padding), smallWidth, smallHeight] as Cell)];
-  }
-  if (layout === "wide") return [[padding, padding, innerWidth, (innerHeight - padding) / 2], [padding, padding + (innerHeight + padding) / 2, innerWidth, (innerHeight - padding) / 2]];
-  return [[padding, padding, innerWidth, innerHeight]];
+
+// Coordinates use a 400px-wide working canvas. At download scale they become the supplied 120px safe margin and photo sizes.
+const cellsFor = (layout: LayoutId): Cell[] => {
+  if (layout === "strip-4") return Array.from({ length: 4 }, (_, index) => [40, 40 + index * 260, 320, 240]);
+  if (layout === "strip-3") return Array.from({ length: 3 }, (_, index) => [40, 40 + index * 320, 320, 300]);
+  if (layout === "grid-4") return [[40, 40, 150, 650 / 3], [210, 40, 150, 650 / 3], [40, 830 / 3, 150, 650 / 3], [210, 830 / 3, 150, 650 / 3]];
+  if (layout === "grid-6") return Array.from({ length: 6 }, (_, index) => [40 + (index % 2) * 170, 40 + Math.floor(index / 2) * (410 / 3 + 20), 150, 410 / 3]);
+  if (layout === "collage") return [[40, 40, 928 / 5, 500], [1248 / 5, 40, 672 / 5, 460 / 3], [1248 / 5, 640 / 3, 672 / 5, 460 / 3], [1248 / 5, 1180 / 3, 672 / 5, 460 / 3]];
+  if (layout === "wide") return [[40, 40, 320, 620 / 3], [40, 800 / 3, 320, 620 / 3]];
+  return [[40, 40, 320, 350]];
 };
 
 export async function renderBooth(state: BoothState, scale = 1) {
   const strip = isStrip(state.layout);
-  // 400×1200 × 3 = 1200×3600 (2×6 in at 600 DPI); 400×600 × 3 = 1200×1800 (4×6 in at 300 DPI).
+  // 2×6 strips export at 1200×3600; 4×6 postcards export at 1200×1800.
   const width = 400;
   const height = strip ? 1200 : 600;
   const canvas = document.createElement("canvas");
@@ -50,43 +40,28 @@ export async function renderBooth(state: BoothState, scale = 1) {
   canvas.height = height * scale;
   const ctx = canvas.getContext("2d")!;
   ctx.scale(scale, scale);
-  const images = await Promise.all(state.photos.map(loadImage));
-  const frame = state.frame ?? "classic";
-  const frameColor = state.frameColor || "#f19aaa";
-  const borderWidth = Number.isFinite(state.borderWidth) ? state.borderWidth : 2;
-  const padding = frame === "film" ? 32 : 20;
-  const footer = frame === "polaroid" || state.layout === "polaroid" ? 170 : strip ? 94 : 44;
-  const cells = cellsFor(state.layout, width, height, padding, footer);
-  const paper = frame === "film" ? "#292724" : frame === "vintage" ? "#d4c4a8" : "#fff9ee";
-  ctx.fillStyle = paper;
+  const [images, stickerImages] = await Promise.all([
+    Promise.all(state.photos.map(loadImage)),
+    Promise.all(state.stickers.map((item) => loadImage(item.asset).catch(() => null))),
+  ]);
+  const frameAsset = frameAssetFor(state.frame, state.layout);
+  const frameImage = frameAsset ? await loadImage(frameAsset) : null;
+  const cells = cellsFor(state.layout);
+  ctx.fillStyle = "#fff9ee";
   ctx.fillRect(0, 0, width, height);
+  if (frameImage) ctx.drawImage(frameImage, 0, 0, width, height);
   ctx.filter = filterMap[state.filter];
-  cells.forEach((cell, index) => { const image = images[index]; if (image) crop(ctx, image, ...cell); });
+  cells.forEach((cell, index) => { const image = images[index]; const position = state.photoPositions[index] ?? { x: 50, y: 50 }; if (image) crop(ctx, image, cell[0] + (position.x - 50) * width / 100, cell[1] + (position.y - 50) * height / 100, cell[2], cell[3]); });
   ctx.filter = "none";
-  if (frame !== "none") {
-    ctx.strokeStyle = frameColor;
-    ctx.lineWidth = borderWidth;
-    ctx.strokeRect(borderWidth / 2, borderWidth / 2, width - borderWidth, height - borderWidth);
-  }
-  if (frame === "film") {
-    ctx.fillStyle = "#fff9ee";
-    for (let y = 10; y < height; y += 28) { ctx.fillRect(8, y, 12, 15); ctx.fillRect(width - 20, y, 12, 15); }
-  }
-  if (frame === "doodle" || frame === "kawaii") {
-    ctx.fillStyle = "#f19aaa";
-    ctx.font = "32px Drawably Pen, cursive";
-    [[18, 40], [width - 42, 40], [18, height - 24], [width - 42, height - 24]].forEach(([x, y]) => ctx.fillText(frame === "doodle" ? "✧" : "♡", x, y));
-  }
-  ctx.fillStyle = frame === "film" ? "#fff9ee" : "#292724";
-  ctx.font = "14px Drawably Pen, cursive";
-  ctx.textAlign = "center";
-  ctx.fillText("little booth ♡", width / 2, height - footer / 2);
-  state.stickers.forEach((item) => {
+  state.stickers.forEach((item, index) => {
+    const image = stickerImages[index];
+    if (!image) return;
+    const stickerWidth = width * item.size / 100;
+    const stickerHeight = stickerWidth * image.height / image.width;
     ctx.save();
     ctx.translate((item.x / 100) * width, (item.y / 100) * height);
     ctx.rotate((item.rotation * Math.PI) / 180);
-    ctx.font = `${item.size * 3}px Drawably Pen, cursive`;
-    ctx.fillText(item.asset, 0, 0);
+    ctx.drawImage(image, -stickerWidth / 2, -stickerHeight / 2, stickerWidth, stickerHeight);
     ctx.restore();
   });
   return canvas.toDataURL("image/png");
