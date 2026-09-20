@@ -1,0 +1,48 @@
+@import 'drawably/style.css';
+@import 'drawably/font.css';
+
+:root {
+    font-family: 'DM Sans', ui-sans-serif, system-ui, sans-serif;
+    color: #292724;
+    background: #fff9ee;
+    font-synthesis: none;
+    --drawably-stroke: #292724;
+    --drawably-fill: #efa6b4;
+    --drawably-paper: #fff9ee;
+}
+
+* {
+    box-sizing: border-box;
+}
+
+body {
+    margin: 0;
+    min-width: 320px;
+    min-height: 100svh;
+    background: #fff9ee;
+}
+
+button,
+input {
+    font: inherit;
+}
+
+button {
+    cursor: pointer;
+}
+
+button:focus-visible,
+input:focus-visible {
+    outline: 3px solid #afc8e8;
+    outline-offset: 3px;
+}
+
+@media (prefers-reduced-motion: reduce) {
+
+    *,
+    *::before,
+    *::after {
+        animation-duration: .01ms !important;
+        transition-duration: .01ms !important;
+    }
+}
